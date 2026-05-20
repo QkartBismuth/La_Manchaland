@@ -1,21 +1,17 @@
 package api
 
 import (
-	"bufio"
-	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
 	"log"
 	"net/http"
-	"os"
-	"os/exec"
-	"strings"
 	"sync"
 	"sync/atomic"
 
 	"github.com/gorilla/websocket"
 	"github.com/lamanchaland/llama-distributed/internal/discovery"
+	"github.com/lamanchaland/llama-distributed/internal/llmserver"
 	"github.com/lamanchaland/llama-distributed/internal/monitor"
 )
 
@@ -30,6 +26,7 @@ var upgrader = websocket.Upgrader{
 type Server struct {
 	discovery     *discovery.Discovery
 	monitor       *monitor.Monitor
+	llmServer     *llmserver.Server
 	staticFS      http.FileSystem
 	mu            sync.RWMutex
 	clients       map[*websocket.Conn]bool
@@ -37,15 +34,14 @@ type Server struct {
 	mmprojPath    string
 	modelLoaded   bool
 	rpcWorkers    []string
-	llamaServer   *exec.Cmd
-	llamaServerMu sync.Mutex
 	generating    atomic.Bool
 }
 
-func NewServer(disc *discovery.Discovery, mon *monitor.Monitor, staticFS http.FileSystem) *Server {
+func NewServer(disc *discovery.Discovery, mon *monitor.Monitor, staticFS http.FileSystem, llm *llmserver.Server) *Server {
 	return &Server{
 		discovery:  disc,
 		monitor:    mon,
+		llmServer:  llm,
 		staticFS:   staticFS,
 		clients:    make(map[*websocket.Conn]bool),
 		rpcWorkers: make([]string, 0),
@@ -56,12 +52,34 @@ func (s *Server) SetModelPath(path string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.modelPath = path
+	if s.llmServer != nil {
+		s.llmServer.SetModelPath(path)
+	}
 }
 
 func (s *Server) SetMMProjPath(path string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.mmprojPath = path
+	if s.llmServer != nil {
+		s.llmServer.SetMMProjPath(path)
+	}
+}
+
+func (s *Server) SetCtxSize(size int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.llmServer != nil {
+		s.llmServer.SetCtxSize(size)
+	}
+}
+
+func (s *Server) SetNGPU(n int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.llmServer != nil {
+		s.llmServer.SetNGPU(n)
+	}
 }
 
 func (s *Server) SetModelLoaded(loaded bool) {
@@ -93,9 +111,10 @@ func (s *Server) Router() http.Handler {
 	mux.HandleFunc("/api/workers/manual", s.handleAddWorker)
 	mux.HandleFunc("/api/model", s.handleModel)
 	mux.HandleFunc("/api/metrics", s.handleMetrics)
-	mux.HandleFunc("/api/chat", s.handleChat)
 	mux.HandleFunc("/ws", s.handleWebSocket)
 	mux.HandleFunc("/", s.handleStatic)
+
+	setupV1Routes(mux, s.llmServer, &s.modelPath)
 
 	return mux
 }
@@ -162,26 +181,95 @@ func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {
 	case http.MethodGet:
 		s.mu.RLock()
 		defer s.mu.RUnlock()
+		running := s.llmServer != nil && s.llmServer.IsRunning()
 		respondJSON(w, http.StatusOK, map[string]interface{}{
 			"path":    s.modelPath,
+			"mmproj":  s.mmprojPath,
 			"loaded":  s.modelLoaded,
+			"running": running,
 			"workers": s.rpcWorkers,
 		})
 
 	case http.MethodPost:
 		var req struct {
-			Path   string `json:"path"`
-			MMProj string `json:"mmproj"`
+			Path      string `json:"path"`
+			MMProj    string `json:"mmproj"`
+			Action    string `json:"action"`
+			CtxSize   int    `json:"ctx_size"`
+			NGPULayers int   `json:"n_gpu_layers"`
+			Threads   int    `json:"threads"`
+			NPredict  int    `json:"n_predict"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			respondJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
 			return
 		}
-		s.SetModelPath(req.Path)
+
+		s.mu.Lock()
+		s.modelPath = req.Path
 		if req.MMProj != "" {
-			s.SetMMProjPath(req.MMProj)
+			s.mmprojPath = req.MMProj
 		}
+		s.mu.Unlock()
+
+		if s.llmServer != nil {
+			s.llmServer.SetModelPath(req.Path)
+			s.llmServer.SetMMProjPath(req.MMProj)
+			if req.CtxSize > 0 {
+				s.llmServer.SetCtxSize(req.CtxSize)
+			}
+			if req.NGPULayers != 0 {
+				s.llmServer.SetNGPU(req.NGPULayers)
+			}
+			if req.Threads > 0 {
+				s.llmServer.SetThreads(req.Threads)
+			}
+			if req.NPredict > 0 {
+				s.llmServer.SetNPredict(req.NPredict)
+			}
+		}
+
+		if req.Action == "start" || req.Action == "load" {
+			if s.llmServer != nil {
+				go func() {
+					s.mu.Lock()
+					s.llmServer.SetRPCWorkers(s.rpcWorkers)
+					s.mu.Unlock()
+					if err := s.llmServer.Start(); err != nil {
+						log.Printf("[model] Failed to start LLM server: %v", err)
+					} else {
+						s.mu.Lock()
+						s.modelLoaded = true
+						s.mu.Unlock()
+						s.broadcastUpdate()
+					}
+				}()
+			}
+		}
+
+		if req.Action == "stop" || req.Action == "unload" {
+			if s.llmServer != nil {
+				s.llmServer.Stop()
+				s.mu.Lock()
+				s.modelLoaded = false
+				s.mu.Unlock()
+				s.broadcastUpdate()
+			}
+		}
+
 		respondJSON(w, http.StatusOK, map[string]string{"status": "ok", "path": req.Path})
+
+	case http.MethodDelete:
+		if s.llmServer != nil {
+			s.llmServer.Stop()
+		}
+		s.mu.Lock()
+		s.modelPath = ""
+		s.mmprojPath = ""
+		s.modelLoaded = false
+		s.mu.Unlock()
+		s.broadcastUpdate()
+		respondJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	}
 }
 
@@ -276,250 +364,6 @@ func (s *Server) handleStatic(w http.ResponseWriter, r *http.Request) {
 	}
 
 	http.ServeContent(w, r, path, stat.ModTime(), f.(io.ReadSeeker))
-}
-
-type ChatRequest struct {
-	Message string        `json:"message"`
-	History []ChatMessage `json:"history"`
-	Stream  bool          `json:"stream"`
-	Image   string        `json:"image"`
-}
-
-type ChatMessage struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
-type ChatResponse struct {
-	Content string `json:"content"`
-	Done    bool   `json:"done"`
-}
-
-func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		respondJSON(w, http.StatusMethodNotAllowed, map[string]string{"error": "method not allowed"})
-		return
-	}
-
-	s.mu.RLock()
-	modelPath := s.modelPath
-	s.mu.RUnlock()
-
-	if modelPath == "" {
-		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "no model loaded"})
-		return
-	}
-
-	if !s.generating.CompareAndSwap(false, true) {
-		respondJSON(w, http.StatusConflict, map[string]string{"error": "already generating"})
-		return
-	}
-	defer s.generating.Store(false)
-
-	var req ChatRequest
-	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-		s.generating.Store(false)
-		respondJSON(w, http.StatusBadRequest, map[string]string{"error": "invalid request"})
-		return
-	}
-
-	llamaPath := s.findLLamaServer()
-	if llamaPath == "" {
-		s.generating.Store(false)
-		respondJSON(w, http.StatusServiceUnavailable, map[string]string{"error": "llama-server not found"})
-		return
-	}
-
-	s.mu.Lock()
-	s.modelLoaded = true
-	s.mu.Unlock()
-
-	s.startLLamaServerIfNeeded(llamaPath)
-
-	prompt := s.buildPrompt(req.Message, req.History)
-
-	w.Header().Set("Content-Type", "text/event-stream")
-	w.Header().Set("Cache-Control", "no-cache")
-	w.Header().Set("Connection", "keep-alive")
-	w.Header().Set("X-Accel-Buffering", "no")
-
-	flusher, ok := w.(http.Flusher)
-	if !ok {
-		s.generating.Store(false)
-		http.Error(w, "streaming not supported", http.StatusInternalServerError)
-		return
-	}
-
-	log.Printf("[chat] Processing: %s", prompt[:min(100, len(prompt))])
-
-	args := []string{
-		"--model", modelPath,
-		"--prompt", prompt,
-		"--n-predict", "512",
-		"--temp", "0.7",
-		"--top-p", "0.9",
-		"--top-k", "40",
-		"--repeat-penalty", "1.1",
-		"--no-display-prompt",
-		"--log-disable",
-	}
-
-	s.mu.RLock()
-	mmproj := s.mmprojPath
-	s.mu.RUnlock()
-
-	var imageFile string
-	if req.Image != "" && mmproj != "" {
-		args = append(args, "--mmproj", mmproj)
-
-		imageFile, _ = s.saveBase64Image(req.Image)
-		if imageFile != "" {
-			args = append(args, "--image", imageFile)
-		}
-	}
-
-	cmd := exec.Command(llamaPath, args...)
-
-	cmd.Env = append(cmd.Env, "GGML_CUDA_ENABLE_UNIFIED_MEMORY=1")
-
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		s.generating.Store(false)
-		log.Printf("[chat] Stdout error: %v", err)
-		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": "internal error"})
-		return
-	}
-
-	if err := cmd.Start(); err != nil {
-		s.generating.Store(false)
-		log.Printf("[chat] Start error: %v", err)
-		respondJSON(w, http.StatusInternalServerError, map[string]string{"error": "failed to start inference"})
-		return
-	}
-
-	go func() {
-		cmd.Wait()
-	}()
-
-	scanner := bufio.NewScanner(stdout)
-	for scanner.Scan() {
-		line := scanner.Text()
-		if strings.Contains(line, "[end of text]") {
-			break
-		}
-
-		content := s.extractTextFromLine(line)
-		if content != "" {
-			resp := ChatResponse{Content: content, Done: false}
-			data, _ := json.Marshal(resp)
-			fmt.Fprintf(w, "data: %s\n", data)
-			flusher.Flush()
-		}
-	}
-
-	done := ChatResponse{Content: "", Done: true}
-	data, _ := json.Marshal(done)
-	fmt.Fprintf(w, "data: %s\n", data)
-	flusher.Flush()
-}
-
-func (s *Server) findLLamaServer() string {
-	paths := []string{
-		"llama-server",
-		"llama-server.exe",
-		"./llama-server",
-		"./llama-server.exe",
-		"../bin/llama-server",
-		"../bin/llama-server.exe",
-		"llama-cli",
-		"llama-cli.exe",
-	}
-
-	for _, p := range paths {
-		if _, err := exec.LookPath(p); err == nil {
-			return p
-		}
-		if _, err := exec.Command("cmd", "/c", "where", p).CombinedOutput(); err == nil {
-			return p
-		}
-	}
-
-	return ""
-}
-
-func (s *Server) startLLamaServerIfNeeded(llamaPath string) {
-	s.llamaServerMu.Lock()
-	defer s.llamaServerMu.Unlock()
-
-	if s.llamaServer != nil && s.llamaServer.Process != nil {
-		return
-	}
-}
-
-func (s *Server) buildPrompt(message string, history []ChatMessage) string {
-	var sb strings.Builder
-	sb.WriteString("<|start_header_id|>system<|end_header_id|>\n\n")
-	sb.WriteString("You are a helpful AI assistant. Answer concisely and accurately.<|eot_id|>\n\n")
-
-	for _, msg := range history {
-		role := "user"
-		if msg.Role == "assistant" {
-			role = "assistant"
-		}
-		sb.WriteString(fmt.Sprintf("<|start_header_id|>%s<|end_header_id|>\n\n", role))
-		sb.WriteString(msg.Content + "<|eot_id|>\n\n")
-	}
-
-	sb.WriteString("<|start_header_id|>user<|end_header_id|>\n\n")
-	sb.WriteString(message + "<|eot_id|>\n\n")
-	sb.WriteString("<|start_header_id|>assistant<|end_header_id|>\n\n")
-
-	return sb.String()
-}
-
-func (s *Server) extractTextFromLine(line string) string {
-	if strings.Contains(line, "inf ") {
-		parts := strings.SplitN(line, " inf ", 2)
-		if len(parts) > 1 {
-			return strings.TrimSpace(parts[1])
-		}
-	}
-
-	if strings.Contains(line, "[") && strings.Contains(line, "]") {
-		return ""
-	}
-
-	if line == "" {
-		return ""
-	}
-
-	return line
-}
-
-func (s *Server) saveBase64Image(dataURL string) (string, error) {
-	idx := strings.Index(dataURL, ",")
-	if idx == -1 {
-		return "", fmt.Errorf("invalid data URL")
-	}
-
-	b64 := dataURL[idx+1:]
-	decoded, err := base64.StdEncoding.DecodeString(b64)
-	if err != nil {
-		return "", err
-	}
-
-	tmpFile, err := os.CreateTemp("", "llama-img-*.png")
-	if err != nil {
-		return "", err
-	}
-	defer tmpFile.Close()
-
-	if _, err := tmpFile.Write(decoded); err != nil {
-		os.Remove(tmpFile.Name())
-		return "", err
-	}
-
-	return tmpFile.Name(), nil
 }
 
 func min(a, b int) int {

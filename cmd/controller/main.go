@@ -14,6 +14,7 @@ import (
 	"github.com/lamanchaland/llama-distributed/internal/api"
 	"github.com/lamanchaland/llama-distributed/internal/config"
 	"github.com/lamanchaland/llama-distributed/internal/discovery"
+	"github.com/lamanchaland/llama-distributed/internal/llmserver"
 	"github.com/lamanchaland/llama-distributed/internal/monitor"
 	"github.com/lamanchaland/llama-distributed/webfs"
 )
@@ -67,7 +68,18 @@ func main() {
 
 	disc := discovery.NewDiscovery()
 
-	apiServer := api.NewServer(disc, mon, webfs.Get())
+	llm := llmserver.New(8081)
+	if cfg.Controller.ModelPath != "" {
+		llm.SetModelPath(cfg.Controller.ModelPath)
+	}
+	if cfg.Controller.ContextSize != 0 {
+		llm.SetCtxSize(cfg.Controller.ContextSize)
+	}
+	if cfg.Controller.Threads != 0 {
+		llm.SetThreads(cfg.Controller.Threads)
+	}
+
+	apiServer := api.NewServer(disc, mon, webfs.Get(), llm)
 	apiServer.SetModelPath(cfg.Controller.ModelPath)
 
 	for _, worker := range cfg.Controller.RPCWorkers {
@@ -78,6 +90,10 @@ func main() {
 			apiServer.AddRPCWorker(wHost, wPort)
 			disc.AddManualWorker(wHost, wPort, fmt.Sprintf("worker-%s:%d", wHost, wPort))
 		}
+	}
+
+	if len(cfg.Controller.RPCWorkers) > 0 {
+		llm.SetRPCWorkers(cfg.Controller.RPCWorkers)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())

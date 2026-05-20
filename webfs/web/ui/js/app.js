@@ -11,6 +11,17 @@ const App = {
     mmprojPath: '',
     attachedImage: null,
     attachedImageBase64: '',
+    reasoningEnabled: false,
+    modelSettings: {
+        ctxSize: 4096,
+        nGpuLayers: -1,
+        threads: 0,
+        nPredict: 512,
+        temperature: 0.7,
+        topP: 0.9,
+        topK: 40,
+        repeatPenalty: 1.1,
+    },
 
     init() {
         this.topology = new TopologyGraph(document.getElementById('topology-graph'), (node) => this.showDeviceDetail(node));
@@ -24,10 +35,9 @@ const App = {
     },
 
     bindEvents() {
-        document.querySelectorAll('.tab-btn').forEach(btn => {
+        document.querySelectorAll('.m3-tab').forEach(btn => {
             btn.addEventListener('click', () => {
-                const tab = btn.dataset.tab;
-                this.switchTab(tab);
+                this.switchTab(btn.dataset.tab);
             });
         });
 
@@ -64,7 +74,32 @@ const App = {
                 const file = e.target.files[0];
                 this.mmprojPath = file.path || file.name;
                 document.getElementById('mmproj-path').value = this.mmprojPath;
+                document.getElementById('mmproj-section').style.display = 'flex';
             }
+        });
+
+        document.getElementById('load-model-btn').addEventListener('click', () => {
+            this.loadModel();
+        });
+
+        document.getElementById('unload-model-btn').addEventListener('click', () => {
+            this.unloadModel();
+        });
+
+        document.getElementById('model-settings-btn').addEventListener('click', () => {
+            this.openModelSettings();
+        });
+
+        document.getElementById('cancel-settings').addEventListener('click', () => {
+            document.getElementById('model-settings-modal').classList.remove('active');
+        });
+
+        document.getElementById('save-settings').addEventListener('click', () => {
+            this.saveModelSettings();
+        });
+
+        document.getElementById('reasoning-toggle').addEventListener('click', () => {
+            this.toggleReasoning();
         });
 
         document.getElementById('attach-image-btn').addEventListener('click', () => {
@@ -84,26 +119,6 @@ const App = {
             document.getElementById('chat-image-input').value = '';
         });
 
-        document.getElementById('load-model-btn').addEventListener('click', () => {
-            this.loadModel();
-        });
-
-        document.getElementById('add-worker-modal').addEventListener('click', (e) => {
-            if (e.target === document.getElementById('add-worker-modal')) {
-                document.getElementById('add-worker-modal').classList.remove('active');
-            }
-        });
-
-        document.getElementById('close-device-detail').addEventListener('click', () => {
-            document.getElementById('device-detail-modal').classList.remove('active');
-        });
-
-        document.getElementById('device-detail-modal').addEventListener('click', (e) => {
-            if (e.target === document.getElementById('device-detail-modal')) {
-                document.getElementById('device-detail-modal').classList.remove('active');
-            }
-        });
-
         document.getElementById('chat-send-btn').addEventListener('click', () => this.sendChatMessage());
 
         document.getElementById('chat-input').addEventListener('keydown', (e) => {
@@ -117,13 +132,25 @@ const App = {
             this.style.height = 'auto';
             this.style.height = Math.min(this.scrollHeight, 150) + 'px';
         });
+
+        document.getElementById('close-device-detail').addEventListener('click', () => {
+            document.getElementById('device-detail-modal').classList.remove('active');
+        });
+
+        document.querySelectorAll('.m3-dialog-backdrop').forEach(backdrop => {
+            backdrop.addEventListener('click', (e) => {
+                if (e.target === backdrop) {
+                    backdrop.classList.remove('active');
+                }
+            });
+        });
     },
 
     switchTab(tab) {
-        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+        document.querySelectorAll('.m3-tab').forEach(b => b.classList.remove('active'));
         document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
 
-        document.querySelector(`.tab-btn[data-tab="${tab}"]`).classList.add('active');
+        document.querySelector(`.m3-tab[data-tab="${tab}"]`).classList.add('active');
         document.getElementById(`tab-${tab}`).classList.add('active');
 
         if (tab === 'topology') {
@@ -173,13 +200,13 @@ const App = {
     },
 
     updateConnectionStatus(connected) {
-        const status = document.getElementById('connection-status');
+        const el = document.getElementById('connection-status');
         if (connected) {
-            status.textContent = 'Connected';
-            status.className = 'status-indicator connected';
+            el.className = 'status-dot connected';
+            el.title = 'Connected';
         } else {
-            status.textContent = 'Disconnected';
-            status.className = 'status-indicator disconnected';
+            el.className = 'status-dot disconnected';
+            el.title = 'Disconnected';
         }
     },
 
@@ -192,19 +219,16 @@ const App = {
             ]);
 
             if (workersRes.ok) {
-                const workers = await workersRes.json();
-                this.updateWorkers(workers);
+                this.updateWorkers(await workersRes.json());
             }
 
             if (modelRes.ok) {
-                const model = await modelRes.json();
-                this.updateModelStatus(model);
+                this.updateModelStatus(await modelRes.json());
             }
 
             if (metricsRes.ok) {
-                const metrics = await metricsRes.json();
-                this.localMetrics = metrics;
-                this.updateMetrics(metrics);
+                this.localMetrics = await metricsRes.json();
+                this.updateMetrics(this.localMetrics);
             }
         } catch (e) {
             console.error('Failed to fetch initial data:', e);
@@ -216,8 +240,7 @@ const App = {
         this.renderWorkers();
         this.topology.update({ workers });
         this.topology.startAnimation();
-
-        document.getElementById('worker-count').textContent = `${workers.length} worker${workers.length !== 1 ? 's' : ''}`;
+        document.getElementById('worker-count-text').textContent = workers.length;
     },
 
     renderWorkers() {
@@ -226,42 +249,42 @@ const App = {
         if (this.workers.length === 0) {
             grid.innerHTML = `
                 <div class="empty-state">
-                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
-                        <rect x="2" y="3" width="20" height="14" rx="2"/>
-                        <path d="M8 21h8M12 17v4"/>
-                    </svg>
-                    <p>No workers connected</p>
-                    <span>Start a worker instance or add one manually</span>
+                    <span class="material-symbols-rounded empty-icon">devices_off</span>
+                    <p class="empty-title">No workers connected</p>
+                    <span class="empty-desc">Start a worker instance or add one manually</span>
                 </div>
             `;
             return;
         }
 
-        grid.innerHTML = this.workers.map((w, i) => `
+        grid.innerHTML = this.workers.map(w => `
             <div class="worker-card">
                 <div class="worker-card-header">
-                    <div>
-                        <div class="worker-name">${this.escapeHtml(w.name || 'worker')}</div>
-                        <div class="worker-address">${w.host}:${w.port}</div>
+                    <div class="worker-card-title">
+                        <div class="worker-icon-sm">W</div>
+                        <div>
+                            <div class="worker-name">${this.escapeHtml(w.name || 'worker')}</div>
+                            <div class="worker-address">${w.host}:${w.port}</div>
+                        </div>
                     </div>
-                    <span class="worker-status ${w.status || 'available'}">${w.status || 'available'}</span>
+                    <span class="m3-chip ${w.status || 'available'}">${w.status || 'available'}</span>
                 </div>
                 <div class="worker-stats">
-                    <div class="stat-item">
-                        <div class="stat-label">RAM</div>
-                        <div class="stat-value">${w.ram_total ? this.formatBytes(w.ram_used || 0) + ' / ' + this.formatBytes(w.ram_total) : 'N/A'}</div>
+                    <div class="worker-stat">
+                        <span class="worker-stat-label">RAM</span>
+                        <span class="worker-stat-value">${w.ram_total ? this.formatBytes(w.ram_used || 0) + ' / ' + this.formatBytes(w.ram_total) : 'N/A'}</span>
                     </div>
-                    <div class="stat-item">
-                        <div class="stat-label">VRAM</div>
-                        <div class="stat-value">${w.vram_total ? this.formatBytes(w.vram_used || 0) + ' / ' + this.formatBytes(w.vram_total) : 'N/A'}</div>
+                    <div class="worker-stat">
+                        <span class="worker-stat-label">VRAM</span>
+                        <span class="worker-stat-value">${w.vram_total ? this.formatBytes(w.vram_used || 0) + ' / ' + this.formatBytes(w.vram_total) : 'N/A'}</span>
                     </div>
-                    <div class="stat-item">
-                        <div class="stat-label">GPU</div>
-                        <div class="stat-value">${w.gpu_name || 'N/A'}</div>
+                    <div class="worker-stat">
+                        <span class="worker-stat-label">GPU</span>
+                        <span class="worker-stat-value">${w.gpu_name || 'N/A'}</span>
                     </div>
-                    <div class="stat-item">
-                        <div class="stat-label">CPU</div>
-                        <div class="stat-value">${w.cpu_load ? w.cpu_load.toFixed(1) + '%' : 'N/A'}</div>
+                    <div class="worker-stat">
+                        <span class="worker-stat-label">CPU</span>
+                        <span class="worker-stat-value">${w.cpu_load ? w.cpu_load.toFixed(1) + '%' : 'N/A'}</span>
                     </div>
                 </div>
             </div>
@@ -271,17 +294,35 @@ const App = {
     updateModelStatus(model) {
         const state = document.getElementById('model-state');
         const pathInput = document.getElementById('model-path');
+        const loadBtn = document.getElementById('load-model-btn');
+        const unloadBtn = document.getElementById('unload-model-btn');
 
         if (model.path) {
             pathInput.value = model.path;
         }
 
-        if (model.loaded) {
+        if (model.running || model.loaded) {
+            state.textContent = 'Running';
+            state.className = 'model-state-text loaded';
+            loadBtn.style.display = 'none';
+            unloadBtn.style.display = 'inline-flex';
+        } else if (model.path) {
             state.textContent = 'Loaded';
-            state.className = 'loaded';
+            state.className = 'model-state-text';
+            loadBtn.style.display = 'inline-flex';
+            unloadBtn.style.display = 'none';
         } else {
             state.textContent = 'Not loaded';
-            state.className = 'not-loaded';
+            state.className = 'model-state-text';
+            loadBtn.style.display = 'inline-flex';
+            unloadBtn.style.display = 'none';
+        }
+
+        if (model.mmproj) {
+            this.mmprojPath = model.mmproj;
+            const mmprojInput = document.getElementById('mmproj-path');
+            if (mmprojInput) mmprojInput.value = model.mmproj;
+            document.getElementById('mmproj-section').style.display = 'flex';
         }
     },
 
@@ -296,14 +337,63 @@ const App = {
 
         if (metrics.gpus && metrics.gpus.length > 0) {
             const gpu = metrics.gpus[0];
-            document.getElementById('gpu-metric-card').style.display = 'block';
-            document.getElementById('gpu-util-card').style.display = 'block';
+            document.getElementById('gpu-metric-card').style.display = 'flex';
+            document.getElementById('gpu-util-card').style.display = 'flex';
 
             document.getElementById('vram-usage').textContent = `${this.formatBytes(gpu.memory_used || 0)} / ${this.formatBytes(gpu.memory_total || 0)}`;
             document.getElementById('vram-bar').style.width = gpu.memory_total > 0 ? ((gpu.memory_used / gpu.memory_total) * 100) + '%' : '0%';
 
             document.getElementById('gpu-util').textContent = (gpu.utilization || 0) + '%';
             document.getElementById('gpu-bar').style.width = (gpu.utilization || 0) + '%';
+        }
+    },
+
+    copyApiUrl() {
+        const baseUrl = `${window.location.protocol}//${window.location.host}/v1/chat/completions`;
+        navigator.clipboard.writeText(baseUrl).then(() => {
+            const icon = document.getElementById('chat-api-copy-icon');
+            icon.textContent = 'check';
+            setTimeout(() => { icon.textContent = 'content_copy'; }, 1500);
+        });
+    },
+
+    openModelSettings() {
+        document.getElementById('setting-ctx-size').value = this.modelSettings.ctxSize;
+        document.getElementById('setting-n-gpu-layers').value = this.modelSettings.nGpuLayers;
+        document.getElementById('setting-threads').value = this.modelSettings.threads;
+        document.getElementById('setting-n-predict').value = this.modelSettings.nPredict;
+        document.getElementById('setting-temp').value = this.modelSettings.temperature;
+        document.getElementById('setting-top-p').value = this.modelSettings.topP;
+        document.getElementById('setting-top-k').value = this.modelSettings.topK;
+        document.getElementById('setting-repeat-penalty').value = this.modelSettings.repeatPenalty;
+        document.getElementById('model-settings-modal').classList.add('active');
+    },
+
+    saveModelSettings() {
+        this.modelSettings.ctxSize = parseInt(document.getElementById('setting-ctx-size').value) || 4096;
+        this.modelSettings.nGpuLayers = parseInt(document.getElementById('setting-n-gpu-layers').value) ?? -1;
+        this.modelSettings.threads = parseInt(document.getElementById('setting-threads').value) || 0;
+        this.modelSettings.nPredict = parseInt(document.getElementById('setting-n-predict').value) || 512;
+        this.modelSettings.temperature = parseFloat(document.getElementById('setting-temp').value) ?? 0.7;
+        this.modelSettings.topP = parseFloat(document.getElementById('setting-top-p').value) ?? 0.9;
+        this.modelSettings.topK = parseInt(document.getElementById('setting-top-k').value) || 40;
+        this.modelSettings.repeatPenalty = parseFloat(document.getElementById('setting-repeat-penalty').value) ?? 1.1;
+        document.getElementById('model-settings-modal').classList.remove('active');
+    },
+
+    toggleReasoning() {
+        this.reasoningEnabled = !this.reasoningEnabled;
+        const icon = document.getElementById('reasoning-icon');
+        const status = document.getElementById('reasoning-status');
+        const btn = document.getElementById('reasoning-toggle');
+        if (this.reasoningEnabled) {
+            icon.textContent = 'lightbulb';
+            status.textContent = 'ON';
+            btn.classList.add('active');
+        } else {
+            icon.textContent = 'lightbulb_outline';
+            status.textContent = 'OFF';
+            btn.classList.remove('active');
         }
     },
 
@@ -340,80 +430,54 @@ const App = {
 
         const btn = document.getElementById('load-model-btn');
         btn.disabled = true;
-        btn.textContent = 'Loading...';
+        btn.innerHTML = '<span class="material-symbols-rounded">hourglass_top</span> Loading...';
 
         try {
+            const s = this.modelSettings;
             const res = await fetch('/api/model', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
-                    path: path,
+                    path,
                     mmproj: this.mmprojPath,
+                    action: 'load',
+                    ctx_size: s.ctxSize,
+                    n_gpu_layers: s.nGpuLayers,
+                    threads: s.threads,
+                    n_predict: s.nPredict,
                 }),
             });
 
             if (res.ok) {
                 this.fetchInitialData();
             } else {
-                alert('Failed to load model');
+                const err = await res.json().catch(() => null);
+                alert('Failed to load model: ' + (err?.error?.message || 'unknown error'));
             }
         } catch (e) {
             alert('Error loading model: ' + e.message);
         } finally {
             btn.disabled = false;
-            btn.textContent = 'Load Model';
+            btn.innerHTML = '<span class="material-symbols-rounded">play_arrow</span> Load';
         }
     },
 
-    showDeviceDetail(node) {
-        const modal = document.getElementById('device-detail-modal');
-        const icon = document.getElementById('device-icon');
-        const name = document.getElementById('device-name');
-        const address = document.getElementById('device-address');
-        const status = document.getElementById('device-status-badge');
+    async unloadModel() {
+        try {
+            const res = await fetch('/api/model', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ action: 'unload' }),
+            });
 
-        name.textContent = node.label;
-
-        if (node.type === 'controller') {
-            icon.textContent = 'C';
-            icon.className = 'device-icon';
-            address.textContent = 'localhost';
-            status.textContent = 'active';
-            status.className = 'device-status-badge';
-
-            if (this.localMetrics) {
-                document.getElementById('dm-cpu').textContent = this.localMetrics.cpu_load ? this.localMetrics.cpu_load.toFixed(1) + '%' : '-';
-                document.getElementById('dm-ram').textContent = this.localMetrics.memory_total ? this.formatBytes(this.localMetrics.memory_total) : '-';
-                document.getElementById('dm-ram-used').textContent = this.localMetrics.memory_used ? this.formatBytes(this.localMetrics.memory_used) : '-';
-                document.getElementById('dm-gpu').textContent = (this.localMetrics.gpus && this.localMetrics.gpus[0]) ? this.localMetrics.gpus[0].name : '-';
-                document.getElementById('dm-vram').textContent = (this.localMetrics.gpus && this.localMetrics.gpus[0]) ? this.formatBytes(this.localMetrics.gpus[0].memory_total) : '-';
-                document.getElementById('dm-vram-used').textContent = (this.localMetrics.gpus && this.localMetrics.gpus[0]) ? this.formatBytes(this.localMetrics.gpus[0].memory_used) : '-';
-                document.getElementById('dm-gpu-temp').textContent = (this.localMetrics.gpus && this.localMetrics.gpus[0]) ? this.localMetrics.gpus[0].temperature + '°C' : '-';
-                document.getElementById('dm-gpu-util').textContent = (this.localMetrics.gpus && this.localMetrics.gpus[0]) ? this.localMetrics.gpus[0].utilization + '%' : '-';
+            if (res.ok) {
+                this.fetchInitialData();
+            } else {
+                alert('Failed to unload model');
             }
-        } else {
-            icon.textContent = 'W';
-            icon.className = 'device-icon worker';
-            address.textContent = node.data ? `${node.data.host}:${node.data.port}` : '-';
-            status.textContent = node.status || 'available';
-            status.className = `device-status-badge ${node.status || 'available'}`;
-
-            const d = node.data || {};
-            document.getElementById('dm-cpu').textContent = d.cpu_load ? d.cpu_load.toFixed(1) + '%' : '-';
-            document.getElementById('dm-ram').textContent = d.ram_total ? this.formatBytes(d.ram_total) : '-';
-            document.getElementById('dm-ram-used').textContent = d.ram_used ? this.formatBytes(d.ram_used) : '-';
-            document.getElementById('dm-gpu').textContent = d.gpu_name || '-';
-            document.getElementById('dm-vram').textContent = d.vram_total ? this.formatBytes(d.vram_total) : '-';
-            document.getElementById('dm-vram-used').textContent = d.vram_used ? this.formatBytes(d.vram_used) : '-';
-            document.getElementById('dm-gpu-temp').textContent = '-';
-            document.getElementById('dm-gpu-util').textContent = '-';
+        } catch (e) {
+            alert('Error unloading model: ' + e.message);
         }
-
-        document.getElementById('dm-last-seen').textContent = node.data && node.data.last_seen
-            ? new Date(node.data.last_seen).toLocaleString()
-            : 'Now';
-
-        modal.classList.add('active');
     },
 
     loadImagePreview(file) {
@@ -443,29 +507,76 @@ const App = {
         input.style.height = 'auto';
         this.isGenerating = true;
 
+        const messages = [];
+        for (const msg of this.chatHistory) {
+            if (msg.role === 'user' && msg.image_url) {
+                messages.push({
+                    role: 'user',
+                    content: [
+                        { type: 'image_url', image_url: { url: msg.image_url } },
+                        { type: 'text', text: msg.content || '' }
+                    ]
+                });
+            } else {
+                messages.push({ role: msg.role, content: msg.content || '' });
+            }
+        }
+
+        const userMsgContent = [];
+        if (imageBase64) {
+            userMsgContent.push({ type: 'image_url', image_url: { url: imageBase64 } });
+        }
+        if (message) {
+            userMsgContent.push({ type: 'text', text: message });
+        }
+
+        messages.push({
+            role: 'user',
+            content: userMsgContent.length === 1 && userMsgContent[0].type === 'text'
+                ? message
+                : userMsgContent
+        });
+
         this.appendMessage('user', message, imageBase64);
 
         const assistantMsg = this.appendMessage('assistant', '');
         const contentEl = assistantMsg.querySelector('.message-content p');
         const cursorEl = document.createElement('span');
-        cursorEl.className = 'cursor';
+        cursorEl.className = 'cursor-blink';
         contentEl.appendChild(cursorEl);
 
         try {
-            const response = await fetch('/api/chat', {
+            const body = {
+                model: 'la-manchaland',
+                messages: messages,
+                stream: true,
+            };
+
+            const s = this.modelSettings;
+            if (s.temperature !== 0.7) body.temperature = s.temperature;
+            if (s.topP !== 0.9) body.top_p = s.topP;
+            if (s.topK !== 40) body.top_k = s.topK;
+            if (s.repeatPenalty !== 1.1) body.repeat_penalty = s.repeatPenalty;
+            if (s.nPredict !== 512) body.max_tokens = s.nPredict;
+
+            if (this.reasoningEnabled) {
+                const reasoningSystem = {
+                    role: 'system',
+                    content: 'Think step by step. Show your reasoning process before giving the final answer. Use <think> tags to structure your thinking.'
+                };
+                body.messages.unshift(reasoningSystem);
+            }
+
+            const response = await fetch('/v1/chat/completions', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    message: message,
-                    history: this.chatHistory,
-                    stream: true,
-                    image: imageBase64 || null,
-                }),
+                body: JSON.stringify(body),
             });
 
             if (!response.ok) {
+                const errData = await response.json().catch(() => null);
                 cursorEl.remove();
-                contentEl.textContent = 'Error: Failed to get response. Is the model loaded?';
+                contentEl.textContent = 'Error: ' + (errData?.error?.message || 'Failed to get response');
                 this.isGenerating = false;
                 return;
             }
@@ -479,26 +590,44 @@ const App = {
                 if (done) break;
 
                 const chunk = decoder.decode(value, { stream: true });
-                const lines = chunk.split('\n').filter(l => l.startsWith('data: '));
+                const lines = chunk.split('\n');
 
                 for (const line of lines) {
-                    const data = JSON.parse(line.substring(6));
-                    if (data.content) {
-                        fullText += data.content;
-                        contentEl.textContent = fullText;
-                        contentEl.appendChild(cursorEl);
+                    const trimmed = line.trim();
+                    if (!trimmed.startsWith('data:')) continue;
+                    const dataStr = trimmed.substring(5).trim();
+                    if (dataStr === '[DONE]') break;
+                    if (!dataStr) continue;
 
-                        const messagesEl = document.getElementById('chat-messages');
-                        messagesEl.scrollTop = messagesEl.scrollHeight;
-                    }
-                    if (data.done) {
-                        break;
+                    try {
+                        const data = JSON.parse(dataStr);
+                        const delta = data.choices?.[0]?.delta;
+                        if (delta?.reasoning_content) {
+                            if (!contentEl.querySelector('.reasoning-block')) {
+                                const reasonBlock = document.createElement('div');
+                                reasonBlock.className = 'reasoning-block';
+                                reasonBlock.innerHTML = '<div class="reasoning-header"><span class="material-symbols-rounded" style="font-size:14px">psychology</span> Reasoning</div><div class="reasoning-text"></div>';
+                                contentEl.insertBefore(reasonBlock, contentEl.querySelector('p'));
+                            }
+                            const reasonText = contentEl.querySelector('.reasoning-text');
+                            if (reasonText) reasonText.textContent += delta.reasoning_content;
+                        }
+                        if (delta?.content) {
+                            fullText += delta.content;
+                            contentEl.querySelector('p').textContent = fullText;
+                            contentEl.appendChild(cursorEl);
+
+                            const messagesEl = document.getElementById('chat-messages');
+                            messagesEl.scrollTop = messagesEl.scrollHeight;
+                        }
+                    } catch (e) {
+                        // skip parse errors
                     }
                 }
             }
 
             cursorEl.remove();
-            this.chatHistory.push({ role: 'user', content: message });
+            this.chatHistory.push({ role: 'user', content: message, image_url: imageBase64 || null });
             this.chatHistory.push({ role: 'assistant', content: fullText });
 
         } catch (e) {
@@ -511,23 +640,11 @@ const App = {
 
     appendMessage(role, content, imageBase64) {
         const container = document.getElementById('chat-messages');
-
-        const emptyState = container.querySelector('.chat-empty-state');
-        if (emptyState) emptyState.remove();
+        const emptyState = container.querySelector('.message.system');
+        if (emptyState && role !== 'system') emptyState.remove();
 
         const msg = document.createElement('div');
         msg.className = `message ${role}`;
-
-        const avatar = document.createElement('div');
-        avatar.className = 'message-avatar';
-
-        if (role === 'user') {
-            avatar.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>';
-        } else if (role === 'assistant') {
-            avatar.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/></svg>';
-        } else {
-            avatar.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83"/></svg>';
-        }
 
         const contentEl = document.createElement('div');
         contentEl.className = 'message-content';
@@ -539,16 +656,69 @@ const App = {
             contentEl.appendChild(img);
         }
 
+        if (this.reasoningEnabled && role === 'assistant') {
+            contentEl.innerHTML = '<div class="reasoning-block"><div class="reasoning-header"><span class="material-symbols-rounded" style="font-size:14px">psychology</span> Reasoning</div><div class="reasoning-text">Thinking...</div></div>';
+        }
+
         const p = document.createElement('p');
         p.textContent = content;
         contentEl.appendChild(p);
 
-        msg.appendChild(avatar);
         msg.appendChild(contentEl);
         container.appendChild(msg);
-
         container.scrollTop = container.scrollHeight;
         return msg;
+    },
+
+    showDeviceDetail(node) {
+        const modal = document.getElementById('device-detail-modal');
+        const icon = document.getElementById('device-icon');
+        const name = document.getElementById('device-name');
+        const address = document.getElementById('device-address');
+        const status = document.getElementById('device-status-badge');
+
+        name.textContent = node.label;
+
+        if (node.type === 'controller') {
+            icon.textContent = 'C';
+            icon.className = 'device-icon-large';
+            address.textContent = 'localhost';
+            status.textContent = 'active';
+            status.className = 'device-status-badge m3-chip available';
+
+            if (this.localMetrics) {
+                document.getElementById('dm-cpu').textContent = this.localMetrics.cpu_load ? this.localMetrics.cpu_load.toFixed(1) + '%' : '-';
+                document.getElementById('dm-ram').textContent = this.localMetrics.memory_total ? this.formatBytes(this.localMetrics.memory_total) : '-';
+                document.getElementById('dm-ram-used').textContent = this.localMetrics.memory_used ? this.formatBytes(this.localMetrics.memory_used) : '-';
+                document.getElementById('dm-gpu').textContent = (this.localMetrics.gpus && this.localMetrics.gpus[0]) ? this.localMetrics.gpus[0].name : '-';
+                document.getElementById('dm-vram').textContent = (this.localMetrics.gpus && this.localMetrics.gpus[0]) ? this.formatBytes(this.localMetrics.gpus[0].memory_total) : '-';
+                document.getElementById('dm-vram-used').textContent = (this.localMetrics.gpus && this.localMetrics.gpus[0]) ? this.formatBytes(this.localMetrics.gpus[0].memory_used) : '-';
+                document.getElementById('dm-gpu-temp').textContent = (this.localMetrics.gpus && this.localMetrics.gpus[0]) ? this.localMetrics.gpus[0].temperature + '°C' : '-';
+                document.getElementById('dm-gpu-util').textContent = (this.localMetrics.gpus && this.localMetrics.gpus[0]) ? this.localMetrics.gpus[0].utilization + '%' : '-';
+            }
+        } else {
+            icon.textContent = 'W';
+            icon.className = 'device-icon-large worker-icon';
+            address.textContent = node.data ? `${node.data.host}:${node.data.port}` : '-';
+            status.textContent = node.status || 'available';
+            status.className = `device-status-badge m3-chip ${node.status || 'available'}`;
+
+            const d = node.data || {};
+            document.getElementById('dm-cpu').textContent = d.cpu_load ? d.cpu_load.toFixed(1) + '%' : '-';
+            document.getElementById('dm-ram').textContent = d.ram_total ? this.formatBytes(d.ram_total) : '-';
+            document.getElementById('dm-ram-used').textContent = d.ram_used ? this.formatBytes(d.ram_used) : '-';
+            document.getElementById('dm-gpu').textContent = d.gpu_name || '-';
+            document.getElementById('dm-vram').textContent = d.vram_total ? this.formatBytes(d.vram_total) : '-';
+            document.getElementById('dm-vram-used').textContent = d.vram_used ? this.formatBytes(d.vram_used) : '-';
+            document.getElementById('dm-gpu-temp').textContent = '-';
+            document.getElementById('dm-gpu-util').textContent = '-';
+        }
+
+        document.getElementById('dm-last-seen').textContent = node.data && node.data.last_seen
+            ? new Date(node.data.last_seen).toLocaleString()
+            : 'Now';
+
+        modal.classList.add('active');
     },
 
     formatBytes(bytes) {
