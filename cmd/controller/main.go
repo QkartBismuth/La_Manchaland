@@ -15,6 +15,7 @@ import (
 	"github.com/lamanchaland/llama-distributed/internal/config"
 	"github.com/lamanchaland/llama-distributed/internal/discovery"
 	"github.com/lamanchaland/llama-distributed/internal/monitor"
+	"github.com/lamanchaland/llama-distributed/webfs"
 )
 
 func main() {
@@ -66,7 +67,7 @@ func main() {
 
 	disc := discovery.NewDiscovery()
 
-	apiServer := api.NewServer(disc, mon)
+	apiServer := api.NewServer(disc, mon, webfs.Get())
 	apiServer.SetModelPath(cfg.Controller.ModelPath)
 
 	for _, worker := range cfg.Controller.RPCWorkers {

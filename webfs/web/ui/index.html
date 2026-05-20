@@ -1,0 +1,258 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>La Manchaland - Distributed LLM Inference</title>
+    <link rel="stylesheet" href="/css/style.css">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="app-container">
+        <header class="app-header">
+            <div class="logo">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+                    <path d="M2 17l10 5 10-5"/>
+                    <path d="M2 12l10 5 10-5"/>
+                </svg>
+                <h1>La Manchaland</h1>
+                <span class="subtitle">Distributed LLM Inference</span>
+            </div>
+            <div class="header-status">
+                <span id="connection-status" class="status-indicator disconnected">Connecting...</span>
+                <span id="worker-count" class="worker-count">0 workers</span>
+            </div>
+        </header>
+
+        <nav class="tab-bar">
+            <button class="tab-btn active" data-tab="dashboard">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/></svg>
+                Dashboard
+            </button>
+            <button class="tab-btn" data-tab="topology">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><circle cx="4" cy="4" r="2"/><circle cx="20" cy="4" r="2"/><line x1="10" y1="10" x2="5" y2="5"/><line x1="14" y1="10" x2="19" y2="5"/></svg>
+                Topology
+            </button>
+            <button class="tab-btn" data-tab="chat">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+                Chat
+            </button>
+        </nav>
+
+        <main class="app-main">
+            <section class="tab-content active" id="tab-dashboard">
+                <div class="model-section">
+                    <h2>Model Configuration</h2>
+                    <div class="model-info-card">
+                    <div class="model-path">
+                        <label>Model Path</label>
+                        <div class="input-group">
+                            <input type="text" id="model-path" readonly placeholder="Select GGUF model file">
+                            <input type="file" id="model-file-input" accept=".gguf" style="display:none">
+                            <button id="browse-model-btn" class="btn btn-secondary">Browse</button>
+                            <button id="load-model-btn" class="btn btn-primary">Load Model</button>
+                        </div>
+                    </div>
+                    <div class="model-path mmproj-section" id="mmproj-section" style="display:none">
+                        <label>MMProj (Multimodal Projector)</label>
+                        <div class="input-group">
+                            <input type="text" id="mmproj-path" readonly placeholder="Select mmproj file">
+                            <input type="file" id="mmproj-file-input" accept=".gguf" style="display:none">
+                            <button id="browse-mmproj-btn" class="btn btn-secondary">Browse</button>
+                            <span class="mmproj-hint">Required for vision/multimodal models</span>
+                        </div>
+                    </div>
+                        <div class="model-status" id="model-status">
+                            <span class="model-label">Status:</span>
+                            <span id="model-state">Not loaded</span>
+                        </div>
+                    </div>
+                </div>
+
+                <section class="workers-section">
+                    <div class="section-header">
+                        <h2>Connected Workers</h2>
+                        <button id="add-worker-btn" class="btn btn-secondary">+ Add Worker</button>
+                    </div>
+                    <div class="workers-grid" id="workers-grid">
+                        <div class="empty-state">
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                                <rect x="2" y="3" width="20" height="14" rx="2"/>
+                                <path d="M8 21h8M12 17v4"/>
+                            </svg>
+                            <p>No workers connected</p>
+                            <span>Start a worker instance or add one manually</span>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="metrics-section">
+                    <h2>System Metrics</h2>
+                    <div class="metrics-grid">
+                        <div class="metric-card">
+                            <span class="metric-label">CPU Load</span>
+                            <div class="metric-value" id="cpu-load">0%</div>
+                            <div class="metric-bar">
+                                <div class="metric-bar-fill" id="cpu-bar" style="width: 0%"></div>
+                            </div>
+                        </div>
+                        <div class="metric-card">
+                            <span class="metric-label">Memory Usage</span>
+                            <div class="metric-value" id="ram-usage">0 / 0 GB</div>
+                            <div class="metric-bar">
+                                <div class="metric-bar-fill" id="ram-bar" style="width: 0%"></div>
+                            </div>
+                        </div>
+                        <div class="metric-card gpu-metric" id="gpu-metric-card" style="display: none">
+                            <span class="metric-label">VRAM Usage</span>
+                            <div class="metric-value" id="vram-usage">0 / 0 GB</div>
+                            <div class="metric-bar">
+                                <div class="metric-bar-fill" id="vram-bar" style="width: 0%"></div>
+                            </div>
+                        </div>
+                        <div class="metric-card gpu-metric" id="gpu-util-card" style="display: none">
+                            <span class="metric-label">GPU Utilization</span>
+                            <div class="metric-value" id="gpu-util">0%</div>
+                            <div class="metric-bar">
+                                <div class="metric-bar-fill" id="gpu-bar" style="width: 0%"></div>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+            </section>
+
+            <section class="tab-content" id="tab-topology">
+                <div class="topology-section">
+                    <div class="section-header">
+                        <h2>Network Topology</h2>
+                        <span class="topology-hint">Click on a device to view details</span>
+                    </div>
+                    <div class="graph-container">
+                        <canvas id="topology-graph"></canvas>
+                    </div>
+                </div>
+            </section>
+
+            <section class="tab-content" id="tab-chat">
+                <div class="chat-container">
+                    <div class="chat-messages" id="chat-messages">
+                        <div class="message system">
+                            <div class="message-avatar">
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <circle cx="12" cy="12" r="3"/>
+                                    <path d="M12 2v4M12 18v4M4.93 4.93l2.83 2.83M16.24 16.24l2.83 2.83M2 12h4M18 12h4M4.93 19.07l2.83-2.83M16.24 7.76l2.83-2.83"/>
+                                </svg>
+                            </div>
+                            <div class="message-content">
+                                <p>Welcome! Load a model to start chatting.</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div class="chat-input-area">
+                        <div class="chat-input-row">
+                            <div id="image-preview-container" class="image-preview" style="display:none">
+                                <img id="image-preview" src="" alt="preview">
+                                <button id="remove-image-btn" class="btn-remove-img">×</button>
+                            </div>
+                            <div class="chat-input-wrapper">
+                                <textarea id="chat-input" placeholder="Type your message..." rows="1"></textarea>
+                                <div class="chat-input-actions">
+                                    <button id="attach-image-btn" class="btn-icon" title="Attach image">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="3" y="3" width="18" height="18" rx="2"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/></svg>
+                                    </button>
+                                    <button id="chat-send-btn" class="btn btn-primary">
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><line x1="22" y1="2" x2="11" y2="13"/><polygon points="22 2 15 22 11 13 2 9 22 2"/></svg>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                        <input type="file" id="chat-image-input" accept="image/*" style="display:none">
+                    </div>
+                </div>
+            </section>
+        </main>
+    </div>
+
+    <div class="modal" id="add-worker-modal">
+        <div class="modal-content">
+            <h3>Add Worker Manually</h3>
+            <form id="add-worker-form">
+                <div class="form-group">
+                    <label for="worker-host">Host / IP</label>
+                    <input type="text" id="worker-host" required placeholder="192.168.1.100">
+                </div>
+                <div class="form-group">
+                    <label for="worker-port">Port</label>
+                    <input type="number" id="worker-port" required placeholder="50051" value="50051">
+                </div>
+                <div class="form-group">
+                    <label for="worker-name">Name (optional)</label>
+                    <input type="text" id="worker-name" placeholder="my-worker">
+                </div>
+                <div class="form-actions">
+                    <button type="button" class="btn btn-secondary" id="cancel-add">Cancel</button>
+                    <button type="submit" class="btn btn-primary">Add Worker</button>
+                </div>
+            </form>
+        </div>
+    </div>
+
+    <div class="modal" id="device-detail-modal">
+        <div class="modal-content device-detail">
+            <div class="device-header">
+                <div class="device-icon" id="device-icon">C</div>
+                <div>
+                    <h3 id="device-name">Controller</h3>
+                    <span class="device-address" id="device-address"></span>
+                </div>
+                <span class="device-status-badge" id="device-status-badge">active</span>
+            </div>
+            <div class="device-metrics" id="device-metrics">
+                <div class="device-metric-item">
+                    <span class="dm-label">CPU Load</span>
+                    <span class="dm-value" id="dm-cpu">-</span>
+                </div>
+                <div class="device-metric-item">
+                    <span class="dm-label">RAM</span>
+                    <span class="dm-value" id="dm-ram">-</span>
+                </div>
+                <div class="device-metric-item">
+                    <span class="dm-label">RAM Used</span>
+                    <span class="dm-value" id="dm-ram-used">-</span>
+                </div>
+                <div class="device-metric-item">
+                    <span class="dm-label">GPU</span>
+                    <span class="dm-value" id="dm-gpu">-</span>
+                </div>
+                <div class="device-metric-item">
+                    <span class="dm-label">VRAM</span>
+                    <span class="dm-value" id="dm-vram">-</span>
+                </div>
+                <div class="device-metric-item">
+                    <span class="dm-label">VRAM Used</span>
+                    <span class="dm-value" id="dm-vram-used">-</span>
+                </div>
+                <div class="device-metric-item">
+                    <span class="dm-label">GPU Temp</span>
+                    <span class="dm-value" id="dm-gpu-temp">-</span>
+                </div>
+                <div class="device-metric-item">
+                    <span class="dm-label">GPU Util</span>
+                    <span class="dm-value" id="dm-gpu-util">-</span>
+                </div>
+                <div class="device-metric-item">
+                    <span class="dm-label">Last Seen</span>
+                    <span class="dm-value" id="dm-last-seen">-</span>
+                </div>
+            </div>
+            <div class="form-actions">
+                <button type="button" class="btn btn-secondary" id="close-device-detail">Close</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="/js/topology.js"></script>
+    <script src="/js/app.js"></script>
+</body>
+</html>
